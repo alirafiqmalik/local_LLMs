@@ -1,0 +1,5 @@
+router/__pycache__
+ollama_bin/*
+.*
+!.gitignore
+~.env.example

@@ -1,0 +1,739 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LLM Router Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg:       #0d1117;
+    --surface:  #161b22;
+    --border:   #30363d;
+    --text:     #e6edf3;
+    --muted:    #8b949e;
+    --green:    #3fb950;
+    --blue:     #58a6ff;
+    --orange:   #f0883e;
+    --red:      #f85149;
+    --purple:   #bc8cff;
+    --yellow:   #d29922;
+    --teal:     #39c5cf;
+
+    --c-trivial:  #3fb950;
+    --c-simple:   #58a6ff;
+    --c-medium:   #f0883e;
+    --c-complex:  #bc8cff;
+    --c-expert:   #f85149;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    font-size: 13px;
+    min-height: 100vh;
+  }
+
+  /* ── Header ──────────────────────────────────────────────────────────── */
+  header {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 12px 20px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+  }
+  header h1 {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--blue);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  header h1 span { font-size: 20px; }
+
+  .header-meta { margin-left: auto; display: flex; gap: 20px; align-items: center; }
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 10px;
+    border-radius: 20px;
+    font-size: 11px;
+    font-weight: 600;
+    border: 1px solid var(--border);
+    background: var(--bg);
+  }
+  .badge.ok  { border-color: var(--green); color: var(--green); }
+  .badge.err { border-color: var(--red);   color: var(--red);   }
+  .badge .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+
+  #uptime { color: var(--muted); font-size: 11px; }
+
+  /* ── Layout ──────────────────────────────────────────────────────────── */
+  .main { padding: 16px 20px; display: flex; flex-direction: column; gap: 16px; }
+
+  .row { display: grid; gap: 16px; }
+  .row-3 { grid-template-columns: 1fr 1fr 1fr; }
+  .row-2 { grid-template-columns: 1.2fr 0.8fr; }
+  .row-2r { grid-template-columns: 0.8fr 1.2fr; }
+
+  /* ── Cards ───────────────────────────────────────────────────────────── */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+  }
+  .card-title {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  /* ── Progress bars ───────────────────────────────────────────────────── */
+  .stat-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+  .stat-label { width: 90px; color: var(--muted); flex-shrink: 0; font-size: 12px; }
+  .bar-wrap { flex: 1; background: var(--bg); border-radius: 4px; height: 8px; overflow: hidden; }
+  .bar {
+    height: 100%;
+    border-radius: 4px;
+    transition: width 0.6s ease;
+  }
+  .bar.gpu  { background: linear-gradient(90deg, var(--blue), var(--purple)); }
+  .bar.cpu  { background: linear-gradient(90deg, var(--green), var(--teal)); }
+  .bar.ram  { background: linear-gradient(90deg, var(--orange), var(--yellow)); }
+  .bar.swap { background: var(--muted); }
+  .stat-val { width: 50px; text-align: right; font-size: 12px; font-weight: 600; }
+
+  /* ── Big numbers ─────────────────────────────────────────────────────── */
+  .big-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .big-num {
+    text-align: center;
+    padding: 10px;
+    background: var(--bg);
+    border-radius: 6px;
+    border: 1px solid var(--border);
+  }
+  .big-num .val { font-size: 24px; font-weight: 700; color: var(--blue); }
+  .big-num .lbl { font-size: 10px; color: var(--muted); margin-top: 2px; text-transform: uppercase; }
+
+  /* ── GPU detail ──────────────────────────────────────────────────────── */
+  .gpu-name {
+    font-size: 12px;
+    color: var(--blue);
+    font-weight: 600;
+    margin-bottom: 8px;
+    padding: 4px 8px;
+    background: rgba(88,166,255,0.08);
+    border-radius: 4px;
+    border: 1px solid rgba(88,166,255,0.2);
+    display: inline-block;
+  }
+  .gpu-temp { font-size: 11px; color: var(--muted); margin-left: 8px; }
+  .gpu-power { font-size: 11px; color: var(--muted); margin-left: 4px; }
+
+  /* ── Chart ───────────────────────────────────────────────────────────── */
+  .chart-container { height: 160px; position: relative; }
+
+  /* ── Request log ─────────────────────────────────────────────────────── */
+  .log-table { width: 100%; border-collapse: collapse; }
+  .log-table th {
+    text-align: left;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--muted);
+    padding: 0 6px 8px;
+    border-bottom: 1px solid var(--border);
+  }
+  .log-table td {
+    padding: 6px 6px;
+    border-bottom: 1px solid rgba(48,54,61,0.5);
+    font-size: 12px;
+    vertical-align: middle;
+  }
+  .log-table tr:hover td { background: rgba(48,54,61,0.4); }
+  .log-wrap { max-height: 320px; overflow-y: auto; }
+
+  .chip {
+    display: inline-block;
+    padding: 2px 7px;
+    border-radius: 10px;
+    font-size: 10px;
+    font-weight: 700;
+    white-space: nowrap;
+  }
+  .chip.trivial { background: rgba(63,185,80,0.15); color: var(--green); }
+  .chip.simple  { background: rgba(88,166,255,0.15); color: var(--blue); }
+  .chip.medium  { background: rgba(240,136,62,0.15); color: var(--orange); }
+  .chip.complex { background: rgba(188,140,255,0.15); color: var(--purple); }
+  .chip.expert  { background: rgba(248,81,73,0.15); color: var(--red); }
+
+  .chip.ollama          { background: rgba(63,185,80,0.1); color: var(--green); }
+  .chip.cloud_anthropic { background: rgba(248,81,73,0.1); color: #ff7b72; }
+  .chip.cloud_openai    { background: rgba(88,166,255,0.1); color: var(--blue); }
+  .chip.cloud_google    { background: rgba(61,198,255,0.1); color: var(--teal); }
+
+  .model-tag {
+    font-family: 'Courier New', monospace;
+    font-size: 11px;
+    color: var(--text);
+    max-width: 200px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    display: block;
+  }
+  .duration { color: var(--muted); font-size: 11px; }
+  .err-tag { color: var(--red); font-size: 10px; }
+
+  /* ── Model list ──────────────────────────────────────────────────────── */
+  .model-list { display: flex; flex-direction: column; gap: 6px; }
+  .model-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    background: var(--bg);
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    transition: border-color 0.2s;
+  }
+  .model-row.active { border-color: var(--green); }
+  .model-row .mname {
+    font-family: monospace;
+    font-size: 11px;
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .model-row .vram { color: var(--muted); font-size: 10px; width: 38px; text-align: right; }
+  .dot-status { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .dot-status.ok      { background: var(--green); }
+  .dot-status.missing { background: var(--muted); }
+  .dot-status.cloud   { background: var(--blue); }
+  .dot-status.no-key  { background: var(--red); }
+
+  /* ── Routing pie chart area ─────────────────────────────────────────── */
+  .pie-wrap { width: 160px; height: 160px; margin: 0 auto; }
+
+  /* ── Stats grid ──────────────────────────────────────────────────────── */
+  .stat-kv { display: flex; flex-direction: column; gap: 8px; }
+  .kv {
+    display: flex;
+    justify-content: space-between;
+    padding: 6px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+  }
+  .kv:last-child { border-bottom: none; }
+  .kv .k { color: var(--muted); }
+  .kv .v { font-weight: 600; }
+
+  /* ── Scrollbar ────────────────────────────────────────────────────────── */
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: var(--bg); }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+  /* ── Connection status overlay ────────────────────────────────────────── */
+  #conn-status {
+    position: fixed;
+    bottom: 16px;
+    right: 16px;
+    padding: 8px 14px;
+    border-radius: 20px;
+    font-size: 11px;
+    font-weight: 700;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    z-index: 200;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  #conn-status.connected    { border-color: var(--green); color: var(--green); }
+  #conn-status.disconnected { border-color: var(--red);   color: var(--red); }
+  #conn-status.connecting   { border-color: var(--yellow); color: var(--yellow); }
+
+  @media (max-width: 1100px) {
+    .row-3 { grid-template-columns: 1fr 1fr; }
+  }
+  @media (max-width: 800px) {
+    .row-3, .row-2, .row-2r { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ── Header ──────────────────────────────────────────────────────────────── -->
+<header>
+  <h1><span>⚡</span> LLM Router</h1>
+  <div id="ollama-badge" class="badge">
+    <span class="dot"></span> Ollama
+  </div>
+  <div id="cloud-badges" style="display:flex;gap:8px;"></div>
+  <div class="header-meta">
+    <span id="req-count" style="color:var(--blue);font-weight:700;">0 requests</span>
+    <span id="uptime">uptime: 0s</span>
+  </div>
+</header>
+
+<!-- ── Main ────────────────────────────────────────────────────────────────── -->
+<div class="main">
+
+  <!-- Row 1: GPU · CPU/RAM · Stats -->
+  <div class="row row-3">
+
+    <!-- GPU Card -->
+    <div class="card">
+      <div class="card-title">🎮 GPU — NVIDIA RTX 3050</div>
+      <div id="gpu-name" class="gpu-name">RTX 3050 6GB</div>
+      <span id="gpu-temp" class="gpu-temp">— °C</span>
+      <span id="gpu-power" class="gpu-power">| — W</span>
+      <div style="margin-top:12px;">
+        <div class="stat-row">
+          <span class="stat-label">VRAM</span>
+          <div class="bar-wrap"><div id="bar-vram" class="bar gpu" style="width:0%"></div></div>
+          <span id="val-vram" class="stat-val">—</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label">GPU Util</span>
+          <div class="bar-wrap"><div id="bar-gpu-util" class="bar gpu" style="width:0%"></div></div>
+          <span id="val-gpu-util" class="stat-val">—</span>
+        </div>
+      </div>
+      <div style="margin-top:12px;">
+        <div class="big-grid">
+          <div class="big-num">
+            <div id="vram-used-val" class="val">—</div>
+            <div class="lbl">VRAM Used (MB)</div>
+          </div>
+          <div class="big-num">
+            <div id="vram-free-val" class="val" style="color:var(--green)">—</div>
+            <div class="lbl">VRAM Free (MB)</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- CPU / RAM Card -->
+    <div class="card">
+      <div class="card-title">🖥 CPU &amp; Memory — i5-13500H</div>
+      <div class="stat-row">
+        <span class="stat-label">CPU Avg</span>
+        <div class="bar-wrap"><div id="bar-cpu" class="bar cpu" style="width:0%"></div></div>
+        <span id="val-cpu" class="stat-val">—</span>
+      </div>
+      <div class="stat-row">
+        <span class="stat-label">RAM</span>
+        <div class="bar-wrap"><div id="bar-ram" class="bar ram" style="width:0%"></div></div>
+        <span id="val-ram" class="stat-val">—</span>
+      </div>
+      <div class="stat-row">
+        <span class="stat-label">Swap</span>
+        <div class="bar-wrap"><div id="bar-swap" class="bar swap" style="width:0%"></div></div>
+        <span id="val-swap" class="stat-val">—</span>
+      </div>
+      <div style="margin-top:10px;" class="big-grid">
+        <div class="big-num">
+          <div id="cpu-freq" class="val" style="font-size:18px;color:var(--green)">—</div>
+          <div class="lbl">CPU MHz</div>
+        </div>
+        <div class="big-num">
+          <div id="ram-avail" class="val" style="font-size:18px;color:var(--teal)">—</div>
+          <div class="lbl">RAM Avail (GB)</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Router Stats Card -->
+    <div class="card">
+      <div class="card-title">📊 Router Stats</div>
+      <div class="stat-kv" id="stats-kv">
+        <div class="kv"><span class="k">Total Requests</span><span id="s-total" class="v">0</span></div>
+        <div class="kv"><span class="k">Errors</span><span id="s-errors" class="v" style="color:var(--red)">0</span></div>
+        <div class="kv"><span class="k">Uptime</span><span id="s-uptime" class="v">—</span></div>
+      </div>
+      <div style="margin-top:12px;">
+        <div class="card-title" style="margin-bottom:8px;">Complexity Distribution</div>
+        <div id="complexity-bars"></div>
+      </div>
+    </div>
+
+  </div><!-- /row-3 -->
+
+  <!-- Row 2: History chart + Model usage pie -->
+  <div class="row row-2">
+
+    <!-- History chart -->
+    <div class="card">
+      <div class="card-title">📈 Resource History (last 60s)</div>
+      <div class="chart-container">
+        <canvas id="history-chart"></canvas>
+      </div>
+    </div>
+
+    <!-- Model usage pie -->
+    <div class="card">
+      <div class="card-title">🔀 Routing Distribution</div>
+      <div class="pie-wrap">
+        <canvas id="routing-chart"></canvas>
+      </div>
+    </div>
+
+  </div><!-- /row-2 -->
+
+  <!-- Row 3: Request log + Model list -->
+  <div class="row row-2r">
+
+    <!-- Request log -->
+    <div class="card">
+      <div class="card-title">📋 Request Log</div>
+      <div class="log-wrap">
+        <table class="log-table">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Model</th>
+              <th>Provider</th>
+              <th>Complexity</th>
+              <th>Duration</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody id="log-body">
+            <tr>
+              <td colspan="6" style="color:var(--muted);text-align:center;padding:20px;">
+                Waiting for requests…
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Model list -->
+    <div class="card">
+      <div class="card-title">🤖 Models</div>
+      <div class="model-list" id="model-list">
+        <div style="color:var(--muted);text-align:center;padding:20px;">Loading…</div>
+      </div>
+    </div>
+
+  </div><!-- /row-2r -->
+
+</div><!-- /main -->
+
+<!-- Connection indicator -->
+<div id="conn-status" class="connecting">
+  <span class="dot" style="width:7px;height:7px;border-radius:50%;background:currentColor"></span>
+  Connecting…
+</div>
+
+<script>
+// ── Config ────────────────────────────────────────────────────────────────────
+const API   = location.origin;
+const WS_URL = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/metrics`;
+
+// ── History data ──────────────────────────────────────────────────────────────
+const MAX_HIST = 30;
+const histLabels = [];
+const histGpu   = [];
+const histCpu   = [];
+const histRam   = [];
+const histVram  = [];
+
+// ── Charts ────────────────────────────────────────────────────────────────────
+const chartDefaults = {
+  responsive: true,
+  maintainAspectRatio: false,
+  animation: { duration: 400 },
+  plugins: { legend: { display: true, labels: { color: '#8b949e', font: { size: 11 }, boxWidth: 12 } } },
+};
+
+const histCtx = document.getElementById('history-chart').getContext('2d');
+const histChart = new Chart(histCtx, {
+  type: 'line',
+  data: {
+    labels: histLabels,
+    datasets: [
+      { label: 'GPU Util %', data: histGpu,  borderColor: '#58a6ff', backgroundColor: 'rgba(88,166,255,0.07)', tension: 0.4, pointRadius: 0, borderWidth: 2, fill: true },
+      { label: 'CPU %',      data: histCpu,  borderColor: '#3fb950', backgroundColor: 'rgba(63,185,80,0.07)',  tension: 0.4, pointRadius: 0, borderWidth: 2, fill: true },
+      { label: 'RAM %',      data: histRam,  borderColor: '#f0883e', backgroundColor: 'rgba(240,136,62,0.07)', tension: 0.4, pointRadius: 0, borderWidth: 2, fill: true },
+      { label: 'VRAM %',     data: histVram, borderColor: '#bc8cff', backgroundColor: 'rgba(188,140,255,0.07)',tension: 0.4, pointRadius: 0, borderWidth: 2, fill: true },
+    ],
+  },
+  options: {
+    ...chartDefaults,
+    scales: {
+      x: { ticks: { color: '#8b949e', font: { size: 10 }, maxTicksLimit: 6 }, grid: { color: 'rgba(48,54,61,0.5)' } },
+      y: { ticks: { color: '#8b949e', font: { size: 10 } }, grid: { color: 'rgba(48,54,61,0.5)' }, min: 0, max: 100 },
+    },
+  },
+});
+
+const pieCtx = document.getElementById('routing-chart').getContext('2d');
+const routingChart = new Chart(pieCtx, {
+  type: 'doughnut',
+  data: {
+    labels: [],
+    datasets: [{ data: [], backgroundColor: ['#3fb950','#58a6ff','#f0883e','#bc8cff','#f85149','#39c5cf','#d29922'], borderWidth: 0, hoverOffset: 4 }],
+  },
+  options: {
+    ...chartDefaults,
+    cutout: '65%',
+    plugins: {
+      legend: { position: 'right', labels: { color: '#8b949e', font: { size: 10 }, boxWidth: 10, padding: 8 } },
+    },
+  },
+});
+
+// ── DOM helpers ───────────────────────────────────────────────────────────────
+function setBar(id, pct) {
+  document.getElementById(id).style.width = Math.min(pct, 100) + '%';
+}
+function setText(id, val) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = val;
+}
+
+function complexityColor(c) {
+  return { trivial: '#3fb950', simple: '#58a6ff', medium: '#f0883e', complex: '#bc8cff', expert: '#f85149' }[c] || '#8b949e';
+}
+
+function providerLabel(p) {
+  return { ollama: 'Local', cloud_anthropic: 'Claude', cloud_openai: 'OpenAI', cloud_google: 'Gemini' }[p] || p;
+}
+
+function fmtDuration(ms) {
+  if (ms < 1000) return ms + 'ms';
+  return (ms / 1000).toFixed(1) + 's';
+}
+
+function fmtUptime(secs) {
+  if (secs < 60)   return secs + 's';
+  if (secs < 3600) return Math.floor(secs/60) + 'm ' + (secs%60) + 's';
+  const h = Math.floor(secs/3600);
+  const m = Math.floor((secs%3600)/60);
+  return h + 'h ' + m + 'm';
+}
+
+// ── System metrics update ─────────────────────────────────────────────────────
+function updateSystem(s) {
+  const g = s.gpu;
+
+  // GPU
+  setText('gpu-name', g.name || 'RTX 3050');
+  setText('gpu-temp', `${g.temperature_c}°C`);
+  setText('gpu-power', g.power_w ? `| ${g.power_w.toFixed(0)}W / ${g.power_limit_w.toFixed(0)}W` : '');
+  setBar('bar-vram',     g.vram_pct);
+  setText('val-vram',    g.vram_pct + '%');
+  setBar('bar-gpu-util', g.utilization_pct);
+  setText('val-gpu-util', g.utilization_pct + '%');
+  setText('vram-used-val', g.vram_used_mb);
+  setText('vram-free-val', g.vram_total_mb - g.vram_used_mb);
+
+  // CPU / RAM
+  setBar('bar-cpu',  s.cpu.avg_pct);
+  setText('val-cpu', s.cpu.avg_pct + '%');
+  setBar('bar-ram',  s.ram.pct);
+  setText('val-ram', s.ram.pct + '%');
+  setBar('bar-swap', s.swap.pct);
+  setText('val-swap', s.swap.pct + '%');
+  setText('cpu-freq', s.cpu.freq_mhz || '—');
+  setText('ram-avail', s.ram.available_gb + ' GB');
+
+  // History
+  const label = new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  if (histLabels.length >= MAX_HIST) {
+    histLabels.shift(); histGpu.shift(); histCpu.shift(); histRam.shift(); histVram.shift();
+  }
+  histLabels.push(label);
+  histGpu.push(g.utilization_pct || 0);
+  histCpu.push(s.cpu.avg_pct || 0);
+  histRam.push(s.ram.pct || 0);
+  histVram.push(g.vram_pct || 0);
+  histChart.update('none');
+}
+
+// ── Stats update ──────────────────────────────────────────────────────────────
+let startTime = null;
+
+function updateStats(st) {
+  if (!startTime) startTime = st.start_time;
+  const uptime = Math.round(Date.now()/1000 - st.start_time);
+
+  setText('req-count', st.total_requests + ' requests');
+  setText('uptime', 'uptime: ' + fmtUptime(uptime));
+  setText('s-total', st.total_requests);
+  setText('s-errors', st.errors);
+  setText('s-uptime', fmtUptime(uptime));
+
+  // Complexity bars
+  const cb = document.getElementById('complexity-bars');
+  const total = Object.values(st.by_complexity).reduce((a,b)=>a+b, 0) || 1;
+  const order = ['trivial','simple','medium','complex','expert'];
+  cb.innerHTML = order.map(c => {
+    const n = st.by_complexity[c] || 0;
+    const pct = Math.round(n/total*100);
+    return `<div style="display:flex;align-items:center;gap:6px;margin-bottom:5px;">
+      <span style="width:60px;color:${complexityColor(c)};font-size:10px;text-transform:uppercase;font-weight:700;">${c}</span>
+      <div style="flex:1;background:var(--bg);border-radius:3px;height:6px;overflow:hidden;">
+        <div style="width:${pct}%;height:100%;background:${complexityColor(c)};border-radius:3px;transition:width 0.5s;"></div>
+      </div>
+      <span style="width:28px;text-align:right;color:var(--muted);font-size:10px;">${n}</span>
+    </div>`;
+  }).join('');
+
+  // Routing pie
+  const models = Object.keys(st.by_model);
+  const vals   = models.map(m => st.by_model[m]);
+  if (models.length > 0) {
+    routingChart.data.labels   = models.map(m => m.split(':')[0]);
+    routingChart.data.datasets[0].data = vals;
+    routingChart.update('none');
+  }
+}
+
+// ── Request log update ────────────────────────────────────────────────────────
+function updateLog(recent) {
+  if (!recent || recent.length === 0) return;
+  const tbody = document.getElementById('log-body');
+  tbody.innerHTML = recent.map(r => `
+    <tr>
+      <td style="color:var(--muted)">${r.time}</td>
+      <td><span class="model-tag" title="${r.model}">${r.model}</span></td>
+      <td><span class="chip ${r.provider}">${providerLabel(r.provider)}</span></td>
+      <td><span class="chip ${r.complexity}">${r.complexity}</span></td>
+      <td class="duration">${fmtDuration(r.duration_ms)}</td>
+      <td>${r.error ? `<span class="err-tag" title="${r.error}">ERR</span>` : '✓'}</td>
+    </tr>
+  `).join('');
+}
+
+// ── Model list update ─────────────────────────────────────────────────────────
+let modelsLoaded = false;
+
+async function loadModels() {
+  if (modelsLoaded) return;
+  try {
+    const data = await fetch(`${API}/api/models`).then(r => r.json());
+    modelsLoaded = true;
+    const el = document.getElementById('model-list');
+    el.innerHTML = '';
+
+    const section = (title, items) => {
+      if (items.length === 0) return;
+      el.innerHTML += `<div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin:10px 0 4px;">${title}</div>`;
+      items.forEach(m => {
+        const status = m.installed
+          ? 'ok' : (m.tier === 'cloud' || m.tier === 'embed')
+            ? (m.available ? 'cloud' : 'no-key')
+            : 'missing';
+        const label = m.installed ? '●' : (m.tier === 'cloud' && m.available ? '☁' : '○');
+        el.innerHTML += `
+          <div class="model-row ${m.installed ? 'active' : ''}">
+            <div class="dot-status ${status}"></div>
+            <span class="mname" title="${m.id}">${m.id.split(':')[0]}</span>
+            <span class="chip ${m.tier}" style="font-size:9px;">${m.tier}</span>
+            ${m.vram_gb ? `<span class="vram">${m.vram_gb}GB</span>` : ''}
+          </div>`;
+      });
+    };
+
+    section('Installed', data.local_installed);
+    section('Recommended to Pull', data.local_recommended.filter(m=>!m.installed));
+    section('Cloud', data.cloud);
+
+  } catch(e) {
+    console.warn('Could not load models', e);
+  }
+}
+
+// ── Ollama status badge ────────────────────────────────────────────────────────
+async function checkStatus() {
+  try {
+    const s = await fetch(`${API}/api/status`).then(r => r.json());
+    const badge = document.getElementById('ollama-badge');
+    if (s.ollama.ok) {
+      badge.className = 'badge ok';
+      badge.innerHTML = '<span class="dot"></span> Ollama ✓';
+    } else {
+      badge.className = 'badge err';
+      badge.innerHTML = '<span class="dot"></span> Ollama ✗';
+    }
+
+    // Cloud badges
+    const cloud = s.cloud;
+    const cb = document.getElementById('cloud-badges');
+    cb.innerHTML = [
+      cloud.anthropic ? '<div class="badge ok"><span class="dot"></span> Claude</div>' : '',
+      cloud.openai    ? '<div class="badge ok"><span class="dot"></span> OpenAI</div>' : '',
+      cloud.google    ? '<div class="badge ok"><span class="dot"></span> Gemini</div>' : '',
+    ].join('');
+  } catch(e) {}
+}
+
+// ── WebSocket ─────────────────────────────────────────────────────────────────
+let ws, reconnectDelay = 1000;
+
+function connect() {
+  const el = document.getElementById('conn-status');
+  el.className = 'connecting';
+  el.innerHTML = '<span class="dot" style="width:7px;height:7px;border-radius:50%;background:currentColor"></span> Connecting…';
+
+  ws = new WebSocket(WS_URL);
+
+  ws.onopen = () => {
+    reconnectDelay = 1000;
+    el.className = 'connected';
+    el.innerHTML = '<span class="dot" style="width:7px;height:7px;border-radius:50%;background:currentColor"></span> Live';
+    setInterval(() => { if (ws.readyState === WebSocket.OPEN) ws.send('ping'); }, 5000);
+    loadModels();
+    checkStatus();
+  };
+
+  ws.onmessage = (e) => {
+    try {
+      const msg = JSON.parse(e.data);
+      if (msg.system)  updateSystem(msg.system);
+      if (msg.stats)   updateStats(msg.stats);
+      if (msg.recent)  updateLog(msg.recent);
+    } catch(err) {}
+  };
+
+  ws.onclose = () => {
+    el.className = 'disconnected';
+    el.innerHTML = '<span class="dot" style="width:7px;height:7px;border-radius:50%;background:currentColor"></span> Disconnected — retrying…';
+    setTimeout(connect, reconnectDelay);
+    reconnectDelay = Math.min(reconnectDelay * 2, 10000);
+  };
+
+  ws.onerror = () => ws.close();
+}
+
+connect();
+</script>
+</body>
+</html>
