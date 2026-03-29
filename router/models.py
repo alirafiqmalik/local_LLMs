@@ -3,9 +3,9 @@ LLM Router — Model Registry & Routing Logic
 
 Routing priority:
   1. HF prefix "hf:<model_id>" → route to HF engine
-  2. Virtual routing tags: "auto", "local:fast", "local:code", "local:general"
-  3. Direct Ollama model name → use directly
-  4. Complexity-based auto-routing (always local)
+  2. Virtual routing tags: "local:fast", "local:code", "local:general"
+  3. Any other explicit name (e.g. mistral:7b, llama3.1:8b) → Ollama as-is
+  4. "auto" only → complexity-based routing (LOCAL_MODELS is metadata for /api/models, not a gate)
 """
 from dataclasses import dataclass
 from typing import List, Dict
@@ -83,6 +83,7 @@ def resolve_model(
       "local:code"              — force Ollama code model
       "local:general"           — force Ollama general model
       "hf:<model_id>"           — force HF engine  e.g. "hf:microsoft/Phi-4"
+      "<ollama tag>"            — any installed Ollama model id, passed through
     """
     model = (requested_model or "auto").strip()
 
@@ -96,11 +97,11 @@ def resolve_model(
         provider, name = VIRTUAL_ROUTES[model]
         return provider, name, f"explicit tag: {model}"
 
-    # ── 3. Direct model name (known local) ───────────────────────────────
-    if model in LOCAL_MODELS:
+    # ── 3. Explicit Ollama model id (any tag installed in Ollama)
+    if model != "auto":
         return "ollama", model, f"direct: {model}"
 
-    # ── 4. Auto-routing by complexity ─────────────────────────────────────
+    # ── 4. Auto-routing by complexity ("auto" only) ───────────────────────
     reason = f"auto, complexity={complexity.value}"
 
     if complexity == Complexity.TRIVIAL:
