@@ -1,108 +1,111 @@
-# Local LLM Configuration Guide
+# LLM Router — Configuration & Model Reference
 
 ## API Endpoints
 
-| Endpoint | URL | Notes |
-|----------|-----|-------|
-| **Ollama Native** | `http://localhost:11434/api` | Full Ollama API |
-| **OpenAI Compatible** | `http://localhost:11434/v1` | Drop-in replacement for OpenAI SDK |
+| Endpoint | URL | Purpose |
+|----------|-----|---------|
+| **LLM Router** | `http://localhost:8000/v1` | Main entry point — smart routing |
+| **Dashboard** | `http://localhost:8000/` | Live resource monitor |
+| **HF Engine** | `http://localhost:8001/v1` | HuggingFace inference (direct) |
+| **Ollama** | `http://localhost:11434/v1` | Ollama direct (bypass router) |
 
-No API key required. Set `OPENAI_API_BASE=http://localhost:11434/v1` in your tools.
-
----
-
-## Installed Models & Recommended Roles
-
-| Model | Best For | VRAM | Speed |
-|-------|----------|------|-------|
-| `qwen2.5-coder:7b-instruct-q4_K_M` | Code generation, debugging, refactoring | ~5GB | ★★★ |
-| `mistral:7b-instruct-q4_K_M` | Planning, reasoning, summarization | ~5GB | ★★★ |
-| `gemma3:4b` | Fast tasks, triage, lightweight chat | ~3GB | ★★★★★ |
-| `nomic-embed-text` | RAG embeddings, semantic search | ~0.3GB | ★★★★★ |
+Always call the **router at :8000** — it handles everything.
 
 ---
 
-## Multi-Agent Role Assignment
+## Routing Table
 
-```
-┌─────────────────────────────────────────────────────┐
-│                  ORCHESTRATOR                        │
-│          (mistral:7b-instruct-q4_K_M)               │
-│       Plans tasks, coordinates agents                │
-└─────────────┬───────────────────┬───────────────────┘
-              │                   │
-    ┌─────────▼──────┐  ┌────────▼─────────┐
-    │  CODE AGENT     │  │  REVIEW AGENT    │
-    │  qwen2.5-coder  │  │  gemma3:4b       │
-    │  Writes code    │  │  Quick reviews   │
-    └────────────────┘  └──────────────────┘
-```
-
-### OpenClaw / OpenAI SDK Usage
-
-```python
-from openai import OpenAI
-
-client = OpenAI(
-    base_url="http://localhost:11434/v1",
-    api_key="ollama"  # any string works
-)
-
-# Code generation
-response = client.chat.completions.create(
-    model="qwen2.5-coder:7b-instruct-q4_K_M",
-    messages=[{"role": "user", "content": "Write a sorting function"}]
-)
-
-# Embeddings
-embedding = client.embeddings.create(
-    model="nomic-embed-text",
-    input="Search query here"
-)
-```
-
-### curl Examples
-
-```bash
-# Chat completion
-curl http://localhost:11434/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model": "gemma3:4b", "messages": [{"role": "user", "content": "Hello"}]}'
-
-# Embeddings
-curl http://localhost:11434/api/embed \
-  -d '{"model": "nomic-embed-text", "input": "search query"}'
-```
+| Complexity | Trigger | Model |
+|-----------|---------|-------|
+| `trivial` | greetings, one-liners | `gemma3:4b` |
+| `simple` | short Q&A | `gemma3:4b` |
+| `medium/code` | coding tasks, debugging | `qwen2.5-coder:7b-instruct-q4_K_M` |
+| `medium/general` | explanations, planning | `mistral:7b-instruct-q4_K_M` |
+| `complex` | refactoring, algorithms | `mistral:7b-instruct-q4_K_M` |
+| `expert` | architecture, system design | cloud API (if key set) → else best local |
 
 ---
 
-## Concurrent Inference Notes
+## Installed Ollama Models
 
-- Ollama auto-swaps models in GPU memory (only 1 model loaded at a time by default)
-- To keep multiple models loaded: `OLLAMA_MAX_LOADED_MODELS=2` (only if models fit combined)
-- `gemma3:4b` (3GB) + `nomic-embed-text` (0.3GB) = 3.3GB → fits in 6GB VRAM together
-- Larger models must time-share the GPU
+| Model | Role | VRAM | Speed |
+|-------|------|------|-------|
+| `gemma3:4b` | Fast triage, chat | 3.3 GB | ★★★★★ |
+| `qwen2.5-coder:7b-instruct-q4_K_M` | Code gen, debug | 4.7 GB | ★★★ |
+| `mistral:7b-instruct-q4_K_M` | Reasoning, analysis | 4.4 GB | ★★★ |
+| `nomic-embed-text` | Embeddings / RAG | 0.3 GB | ★★★★★ |
+
+Models are stored in `local_LLMs/models/ollama/` (portable).
+
+---
+
+## HuggingFace Engine (port 8001)
+
+Supports any model from HuggingFace Hub. Uses 4-bit quantization (bitsandbytes nf4) by default.
+Models cached to `local_LLMs/models/huggingface/`.
+
+**Quantization options:** `4bit` (default) | `8bit` | `none`
+
+**Model size guide for RTX 3050 6GB:**
+
+| Model Size | Quantization | Fits in 6GB? |
+|-----------|-------------|--------------|
+| ≤ 7B params | 4-bit | ✓ fully GPU |
+| 7–13B params | 4-bit | ✓ with minor CPU spill |
+| 13–30B params | 4-bit | partial GPU + CPU offload (slow) |
+| 30B+ params | any | ✗ CPU-only, very slow |
+
+**VRAM coordination:** The router automatically unloads the opposite engine before each request. Only one model in VRAM at a time.
+
+---
+
+## Model Routing Tags
+
+```
+auto            → complexity-based auto routing
+local:fast      → gemma3:4b
+local:code      → qwen2.5-coder:7b
+local:general   → mistral:7b
+hf:<model_id>   → any HuggingFace model via HF engine
+cloud:claude    → claude-opus-4-6  (needs ANTHROPIC_API_KEY)
+cloud:openai    → gpt-4o           (needs OPENAI_API_KEY)
+cloud:gemini    → gemini-2.0-flash (needs GOOGLE_API_KEY)
+cloud:sonnet    → claude-sonnet-4-6
+```
 
 ---
 
 ## Management Commands
 
 ```bash
-# Start server
-bash ~/Desktop/local_LLMs/start_ollama.sh --background
+# ── Start / Stop ─────────────────────────────────────────
+bash start_router.sh --bg       # start Ollama + HF engine + router
+bash start_router.sh --stop     # stop router + HF engine
+bash start_hf_engine.sh --bg    # start HF engine only
+bash start_hf_engine.sh --stop  # stop HF engine only
+bash start_ollama.sh --background
 
-# List models
-~/Desktop/local_LLMs/ollama_bin/bin/ollama list
+# ── Ollama models ─────────────────────────────────────────
+./ollama_bin/bin/ollama list
+./ollama_bin/bin/ollama pull <model>
+./ollama_bin/bin/ollama rm <model>
 
-# Run interactive chat
-~/Desktop/local_LLMs/ollama_bin/bin/ollama run gemma3:4b
+# ── HF engine ─────────────────────────────────────────────
+curl http://localhost:8001/health
+curl -X POST http://localhost:8001/v1/models/unload
 
-# Pull new model
-~/Desktop/local_LLMs/ollama_bin/bin/ollama pull <model>
+# ── Migrate Ollama models to local folder (one-time) ──────
+bash migrate_models.sh
+```
 
-# Remove model
-~/Desktop/local_LLMs/ollama_bin/bin/ollama rm <model>
+---
 
-# Test all models
-bash ~/Desktop/local_LLMs/test_models.sh
+## Recommended Models to Pull (RTX 3050 6GB)
+
+```bash
+OLLAMA=./ollama_bin/bin/ollama
+$OLLAMA pull deepseek-r1:7b       # reasoning/analysis  4.9 GB
+$OLLAMA pull phi3.5:3.8b          # fast triage         2.3 GB
+$OLLAMA pull llama3.2:3b          # compact general     2.0 GB
+$OLLAMA pull codellama:7b-instruct # code               3.8 GB
 ```

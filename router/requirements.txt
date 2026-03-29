@@ -4,10 +4,4 @@ httpx>=0.28.0
 psutil>=6.1.0
 pydantic>=2.10.0
 pydantic-settings>=2.7.0
-
-# Cloud APIs — install only what you need
-anthropic>=0.42.0
 openai>=1.59.0
-
-# Optional: Google Gemini
-# google-generativeai>=0.8.0

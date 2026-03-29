@@ -1,16 +1,16 @@
 #!/bin/bash
 # ============================================================
-# test_models.sh — Test all installed Ollama models
+# scripts/test_models.sh — Test all installed Ollama models
 # ============================================================
 # Sends a test prompt to each model and reports response time.
-# Usage: bash test_models.sh
+# Canonical interface: ./llm test
+# Direct usage: bash scripts/test_models.sh
 # ============================================================
 
 OLLAMA_URL="http://localhost:11434"
 
-# Check server is running
 if ! curl -s "${OLLAMA_URL}/api/tags" > /dev/null 2>&1; then
-    echo "❌ Ollama server not running. Start it with: bash start_ollama.sh --background"
+    echo "✗ Ollama not running. Start with: ./llm start"
     exit 1
 fi
 
@@ -20,7 +20,6 @@ echo "  $(date)"
 echo "========================================="
 echo ""
 
-# Get list of models
 MODELS=$(curl -s "${OLLAMA_URL}/api/tags" | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
@@ -29,7 +28,7 @@ for m in data.get('models', []):
 " 2>/dev/null)
 
 if [ -z "$MODELS" ]; then
-    echo "❌ No models installed."
+    echo "✗ No models installed."
     exit 1
 fi
 
@@ -44,33 +43,31 @@ for MODEL in $MODELS; do
     echo "-----------------------------------------"
     echo "Testing: ${MODEL}"
     echo "-----------------------------------------"
-    
-    # Skip embedding models (they don't do chat)
+
     if echo "$MODEL" | grep -qi "embed"; then
-        echo "  ⏭️  Embedding model — testing via /api/embed"
+        echo "  Embedding model — testing via /api/embed"
         RESULT=$(curl -s "${OLLAMA_URL}/api/embed" \
             -d "{\"model\": \"${MODEL}\", \"input\": \"Hello world\"}" 2>/dev/null)
-        
+
         if echo "$RESULT" | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
 embeddings = data.get('embeddings', [])
 if embeddings and len(embeddings[0]) > 0:
-    print(f'  ✅ Embedding dimension: {len(embeddings[0])}')
+    print(f'  ✓ Embedding dimension: {len(embeddings[0])}')
 else:
-    print('  ❌ No embeddings returned')
+    print('  ✗ No embeddings returned')
     sys.exit(1)
 " 2>/dev/null; then
             PASS=$((PASS + 1))
         else
-            echo "  ❌ Failed"
+            echo "  ✗ Failed"
             FAIL=$((FAIL + 1))
         fi
         echo ""
         continue
     fi
-    
-    # Chat models — use OpenAI-compatible endpoint
+
     START_TIME=$(date +%s%N)
     RESULT=$(curl -s "${OLLAMA_URL}/v1/chat/completions" \
         -H "Content-Type: application/json" \
@@ -81,9 +78,8 @@ else:
             \"options\": {\"num_predict\": 10}
         }" 2>/dev/null)
     END_TIME=$(date +%s%N)
-    
     ELAPSED=$(( (END_TIME - START_TIME) / 1000000 ))
-    
+
     RESPONSE=$(echo "$RESULT" | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
@@ -93,21 +89,20 @@ if choices:
 else:
     print('ERROR: ' + json.dumps(data))
 " 2>/dev/null)
-    
+
     USAGE=$(echo "$RESULT" | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
 u = data.get('usage', {})
-print(f'prompt_tokens={u.get(\"prompt_tokens\",\"?\")}, completion_tokens={u.get(\"completion_tokens\",\"?\")}, total={u.get(\"total_tokens\",\"?\")}')
+print(f'prompt={u.get(\"prompt_tokens\",\"?\")}, completion={u.get(\"completion_tokens\",\"?\")}, total={u.get(\"total_tokens\",\"?\")}')
 " 2>/dev/null)
-    
+
     if [ -n "$RESPONSE" ] && ! echo "$RESPONSE" | grep -q "ERROR"; then
-        echo "  ✅ Response: ${RESPONSE}"
-        echo "  ⏱️  Time: ${ELAPSED}ms"
-        echo "  📊 ${USAGE}"
+        echo "  ✓ Response: ${RESPONSE}"
+        echo "    Time: ${ELAPSED}ms  |  ${USAGE}"
         PASS=$((PASS + 1))
     else
-        echo "  ❌ Failed: ${RESPONSE}"
+        echo "  ✗ Failed: ${RESPONSE}"
         FAIL=$((FAIL + 1))
     fi
     echo ""
@@ -116,8 +111,6 @@ done
 echo "========================================="
 echo "  Results: ${PASS} passed, ${FAIL} failed"
 echo "========================================="
-
-# Show GPU memory after tests
 echo ""
 echo "GPU Memory After Tests:"
 nvidia-smi --query-gpu=name,memory.used,memory.total --format=csv,noheader 2>/dev/null || echo "  N/A"

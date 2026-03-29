@@ -1,0 +1,174 @@
+#!/bin/bash
+# ============================================================
+# llm — LLM Router CLI (single entry point)
+# ============================================================
+# Usage: ./llm <command> [options]
+#
+# Commands:
+#   start [--hf]          Start router + Ollama (optionally + HF engine)
+#   stop                  Stop router and HF engine
+#   restart [--hf]        Restart all services
+#   status                Health check (JSON)
+#   logs [router|hf|all]  Tail service logs
+#   models                List installed Ollama models
+#   pull <tag|model>      Pull a model (fast|code|general|reasoning|<tag>)
+#   test                  Run model smoke tests
+#   migrate               Migrate ~/.ollama/models → models/ollama/
+#   examples              Run usage examples (requires running router)
+#   ollama [--bg]         Start Ollama only
+#   hf [--bg|--stop]      Manage HF engine
+#   help                  Show this help
+# ============================================================
+
+set -e
+
+export BASE_DIR="$(cd "$(dirname "$(realpath "$0")")" && pwd)"
+SCRIPTS_DIR="${BASE_DIR}/scripts"
+OLLAMA_BIN="${BASE_DIR}/ollama_bin/bin/ollama"
+ROUTER_VENV="${BASE_DIR}/.venv"
+
+CMD="${1:-help}"
+shift || true
+
+# ── Shared model pull map ──────────────────────────────────────────────────────
+_resolve_pull_tag() {
+    case "$1" in
+        fast)      echo "phi3.5:3.8b" ;;
+        code)      echo "qwen2.5-coder:7b-instruct-q4_K_M" ;;
+        general)   echo "mistral:7b-instruct-q4_K_M" ;;
+        reasoning) echo "deepseek-r1:7b" ;;
+        *)         echo "$1" ;;
+    esac
+}
+
+# ── Commands ──────────────────────────────────────────────────────────────────
+
+case "$CMD" in
+
+    start)
+        bash "${SCRIPTS_DIR}/start_router.sh" --bg "$@"
+        ;;
+
+    stop)
+        ROUTER_PID_FILE="${BASE_DIR}/logs/router.pid"
+        HF_PID_FILE="${BASE_DIR}/logs/hf_engine.pid"
+        for PID_FILE in "$ROUTER_PID_FILE" "$HF_PID_FILE"; do
+            NAME=$(basename "$PID_FILE" .pid)
+            if [[ -f "$PID_FILE" ]]; then
+                PID=$(cat "$PID_FILE")
+                echo "Stopping ${NAME} (PID $PID)..."
+                kill "$PID" 2>/dev/null && echo "  ✓ Stopped" || echo "  Already gone"
+                rm -f "$PID_FILE"
+            else
+                echo "${NAME}: no PID file"
+            fi
+        done
+        ;;
+
+    restart)
+        "$0" stop
+        echo ""
+        "$0" start "$@"
+        ;;
+
+    status)
+        curl -s http://localhost:8000/api/status | python3 -m json.tool 2>/dev/null \
+            || echo "Router not running. Start with: ./llm start"
+        ;;
+
+    logs)
+        TARGET="${1:-all}"
+        case "$TARGET" in
+            router) tail -f "${BASE_DIR}/logs/router.log" ;;
+            ollama) tail -f "${BASE_DIR}/logs/ollama.log" ;;
+            hf)     tail -f "${BASE_DIR}/logs/hf_engine.log" ;;
+            all|*)  tail -f "${BASE_DIR}/logs/router.log" \
+                            "${BASE_DIR}/logs/hf_engine.log" 2>/dev/null \
+                        || echo "No logs found — start services first" ;;
+        esac
+        ;;
+
+    models)
+        export LD_LIBRARY_PATH="${BASE_DIR}/ollama_bin/lib/ollama:${LD_LIBRARY_PATH}"
+        export OLLAMA_MODELS="${BASE_DIR}/models/ollama"
+        "${OLLAMA_BIN}" list
+        ;;
+
+    pull)
+        MODEL=$(_resolve_pull_tag "${1:-}")
+        if [[ -z "$MODEL" ]]; then
+            echo "Usage: ./llm pull <fast|code|general|reasoning|<ollama-tag>>"
+            exit 1
+        fi
+        export LD_LIBRARY_PATH="${BASE_DIR}/ollama_bin/lib/ollama:${LD_LIBRARY_PATH}"
+        export OLLAMA_MODELS="${BASE_DIR}/models/ollama"
+        echo "Pulling: ${MODEL}"
+        "${OLLAMA_BIN}" pull "$MODEL"
+        ;;
+
+    test)
+        bash "${SCRIPTS_DIR}/test_models.sh"
+        ;;
+
+    migrate)
+        bash "${SCRIPTS_DIR}/migrate_models.sh"
+        ;;
+
+    examples)
+        if [[ ! -d "${ROUTER_VENV}" ]]; then
+            echo "✗ Router venv not found. Run: ./llm start first."
+            exit 1
+        fi
+        "${ROUTER_VENV}/bin/python" "${BASE_DIR}/examples/examples.py"
+        ;;
+
+    ollama)
+        bash "${SCRIPTS_DIR}/start_ollama.sh" "$@"
+        ;;
+
+    hf)
+        bash "${SCRIPTS_DIR}/start_hf_engine.sh" "$@"
+        ;;
+
+    help|--help|-h)
+        cat <<'EOF'
+Usage: ./llm <command> [options]
+
+  start [--hf]          Start router + Ollama (--hf also starts HF engine)
+  stop                  Stop router and HF engine (by PID file)
+  restart [--hf]        Stop then start
+  status                Health check — JSON from /api/status
+  logs [router|hf|all]  Tail service logs (default: all)
+  models                List installed Ollama models
+  pull <tag>            Pull a model:
+                          fast      → phi3.5:3.8b
+                          code      → qwen2.5-coder:7b-instruct-q4_K_M
+                          general   → mistral:7b-instruct-q4_K_M
+                          reasoning → deepseek-r1:7b
+                          <tag>     → any ollama model tag
+  test                  Smoke test all installed Ollama models
+  migrate               Migrate ~/.ollama/models → models/ollama/ (one-time)
+  examples              Run examples/examples.py (router must be running)
+  ollama [--bg]         Start Ollama only
+  hf [--bg|--stop]      Manage HF engine only
+  help                  Show this help
+
+Examples:
+  ./llm start           # Start Ollama + router
+  ./llm start --hf      # Also start HF engine
+  ./llm pull fast        # Pull phi3.5:3.8b
+  ./llm logs router      # Tail router log only
+  ./llm status           # Full health check
+
+Dashboard:  http://localhost:8000/
+API:        http://localhost:8000/v1/chat/completions
+EOF
+        ;;
+
+    *)
+        echo "Unknown command: $CMD"
+        echo "Run './llm help' for usage."
+        exit 1
+        ;;
+
+esac

@@ -1,0 +1,20 @@
+# ── Core inference ─────────────────────────────────────────────────────────
+torch>=2.3.0                    # CUDA 12.x compatible
+transformers>=4.45.0
+accelerate>=0.34.0              # device_map="auto" + CPU offload
+bitsandbytes>=0.43.0            # 4-bit / 8-bit quantization on NVIDIA
+
+# ── API server ──────────────────────────────────────────────────────────────
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+pydantic>=2.10.0
+
+# ── GGUF support (llama-cpp-python with CUDA) ───────────────────────────────
+# Installed separately in start script with CUDA build flags
+# llama-cpp-python>=0.3.0
+
+# ── HuggingFace Hub (model downloads) ──────────────────────────────────────
+huggingface_hub>=0.24.0
+safetensors>=0.4.0
+sentencepiece>=0.2.0            # tokenizer for many models
+protobuf>=4.25.0                # needed by some tokenizers

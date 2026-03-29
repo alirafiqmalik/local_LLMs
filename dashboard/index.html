@@ -189,10 +189,8 @@
   .chip.complex { background: rgba(188,140,255,0.15); color: var(--purple); }
   .chip.expert  { background: rgba(248,81,73,0.15); color: var(--red); }
 
-  .chip.ollama          { background: rgba(63,185,80,0.1); color: var(--green); }
-  .chip.cloud_anthropic { background: rgba(248,81,73,0.1); color: #ff7b72; }
-  .chip.cloud_openai    { background: rgba(88,166,255,0.1); color: var(--blue); }
-  .chip.cloud_google    { background: rgba(61,198,255,0.1); color: var(--teal); }
+  .chip.ollama     { background: rgba(63,185,80,0.1); color: var(--green); }
+  .chip.hf_engine  { background: rgba(88,166,255,0.1); color: var(--blue); }
 
   .model-tag {
     font-family: 'Courier New', monospace;
@@ -224,6 +222,7 @@
     font-family: monospace;
     font-size: 11px;
     flex: 1;
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -232,8 +231,6 @@
   .dot-status { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
   .dot-status.ok      { background: var(--green); }
   .dot-status.missing { background: var(--muted); }
-  .dot-status.cloud   { background: var(--blue); }
-  .dot-status.no-key  { background: var(--red); }
 
   /* ── Routing pie chart area ─────────────────────────────────────────── */
   .pie-wrap { width: 160px; height: 160px; margin: 0 auto; }
@@ -292,7 +289,9 @@
   <div id="ollama-badge" class="badge">
     <span class="dot"></span> Ollama
   </div>
-  <div id="cloud-badges" style="display:flex;gap:8px;"></div>
+  <div id="hf-badge" class="badge">
+    <span class="dot"></span> HF Engine
+  </div>
   <div class="header-meta">
     <span id="req-count" style="color:var(--blue);font-weight:700;">0 requests</span>
     <span id="uptime">uptime: 0s</span>
@@ -523,7 +522,7 @@ function complexityColor(c) {
 }
 
 function providerLabel(p) {
-  return { ollama: 'Local', cloud_anthropic: 'Claude', cloud_openai: 'OpenAI', cloud_google: 'Gemini' }[p] || p;
+  return { ollama: 'Ollama', hf_engine: 'HF Engine' }[p] || p;
 }
 
 function fmtDuration(ms) {
@@ -635,6 +634,13 @@ function updateLog(recent) {
 // ── Model list update ─────────────────────────────────────────────────────────
 let modelsLoaded = false;
 
+function fmtModelSize(bytes) {
+  if (bytes == null) return '';
+  const gb = bytes / (1024 ** 3);
+  if (gb >= 1) return `${gb.toFixed(1)}GB`;
+  return `${(bytes / (1024 ** 2)).toFixed(0)}MB`;
+}
+
 async function loadModels() {
   if (modelsLoaded) return;
   try {
@@ -643,55 +649,50 @@ async function loadModels() {
     const el = document.getElementById('model-list');
     el.innerHTML = '';
 
-    const section = (title, items) => {
-      if (items.length === 0) return;
-      el.innerHTML += `<div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin:10px 0 4px;">${title}</div>`;
-      items.forEach(m => {
-        const status = m.installed
-          ? 'ok' : (m.tier === 'cloud' || m.tier === 'embed')
-            ? (m.available ? 'cloud' : 'no-key')
-            : 'missing';
-        const label = m.installed ? '●' : (m.tier === 'cloud' && m.available ? '☁' : '○');
+    const locals = data.local_installed || [];
+    if (locals.length > 0) {
+      el.innerHTML += `<div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin:10px 0 4px;">Ollama installed</div>`;
+      locals.forEach(m => {
+        const disk = fmtModelSize(m.size);
+        const badge = m.vram_gb != null ? `${m.vram_gb}GB` : (disk || '');
         el.innerHTML += `
-          <div class="model-row ${m.installed ? 'active' : ''}">
-            <div class="dot-status ${status}"></div>
-            <span class="mname" title="${m.id}">${m.id.split(':')[0]}</span>
-            <span class="chip ${m.tier}" style="font-size:9px;">${m.tier}</span>
-            ${m.vram_gb ? `<span class="vram">${m.vram_gb}GB</span>` : ''}
+          <div class="model-row active">
+            <div class="dot-status ok"></div>
+            <span class="mname" title="${m.id}">${m.id}</span>
+            ${badge ? `<span class="vram">${badge}</span>` : ''}
           </div>`;
       });
-    };
-
-    section('Installed', data.local_installed);
-    section('Recommended to Pull', data.local_recommended.filter(m=>!m.installed));
-    section('Cloud', data.cloud);
+    } else {
+      el.innerHTML += `<div style="font-size:10px;color:var(--muted);padding:4px 0;">No Ollama models (daemon unreachable or empty).</div>`;
+    }
 
   } catch(e) {
     console.warn('Could not load models', e);
   }
 }
 
-// ── Ollama status badge ────────────────────────────────────────────────────────
+// ── Service status badges ──────────────────────────────────────────────────────
 async function checkStatus() {
   try {
     const s = await fetch(`${API}/api/status`).then(r => r.json());
-    const badge = document.getElementById('ollama-badge');
+
+    const ollamaBadge = document.getElementById('ollama-badge');
     if (s.ollama.ok) {
-      badge.className = 'badge ok';
-      badge.innerHTML = '<span class="dot"></span> Ollama ✓';
+      ollamaBadge.className = 'badge ok';
+      ollamaBadge.innerHTML = '<span class="dot"></span> Ollama ✓';
     } else {
-      badge.className = 'badge err';
-      badge.innerHTML = '<span class="dot"></span> Ollama ✗';
+      ollamaBadge.className = 'badge err';
+      ollamaBadge.innerHTML = '<span class="dot"></span> Ollama ✗';
     }
 
-    // Cloud badges
-    const cloud = s.cloud;
-    const cb = document.getElementById('cloud-badges');
-    cb.innerHTML = [
-      cloud.anthropic ? '<div class="badge ok"><span class="dot"></span> Claude</div>' : '',
-      cloud.openai    ? '<div class="badge ok"><span class="dot"></span> OpenAI</div>' : '',
-      cloud.google    ? '<div class="badge ok"><span class="dot"></span> Gemini</div>' : '',
-    ].join('');
+    const hfBadge = document.getElementById('hf-badge');
+    if (s.hf_engine.ok) {
+      hfBadge.className = 'badge ok';
+      hfBadge.innerHTML = '<span class="dot"></span> HF Engine ✓';
+    } else {
+      hfBadge.className = 'badge err';
+      hfBadge.innerHTML = '<span class="dot"></span> HF Engine ✗';
+    }
   } catch(e) {}
 }
 

@@ -1,5 +1,8 @@
-router/__pycache__
-ollama_bin/*
+__pycache__
+*/__pycache__
+ollama_bin/
+logs/
+models/
 .*
 !.gitignore
 ~.env.example

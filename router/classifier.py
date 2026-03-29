@@ -3,11 +3,11 @@ LLM Router — Complexity Classifier
 
 Heuristic-first classification so we never waste a model call on routing.
 Tiers:
-  TRIVIAL  → gemma3:4b     (greetings, one-liners, simple lookups)
-  SIMPLE   → gemma3:4b     (basic Q&A, short coding questions)
+  TRIVIAL  → gemma3:4b       (greetings, one-liners, simple lookups)
+  SIMPLE   → gemma3:4b       (basic Q&A, short coding questions)
   MEDIUM   → qwen2.5/mistral (coding tasks, debugging, explanations)
-  COMPLEX  → mistral:7b    (multi-step code, refactoring, analysis)
-  EXPERT   → Cloud API     (system design, security audit, very long context)
+  COMPLEX  → mistral:7b      (multi-step code, refactoring, analysis)
+  EXPERT   → mistral:7b      (system design, long context — best local)
 """
 import re
 from enum import Enum

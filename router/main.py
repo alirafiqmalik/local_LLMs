@@ -4,7 +4,7 @@ LLM Router — Main FastAPI Application
 Exposes:
   GET  /                          → Dashboard UI
   GET  /api/status                → Router health + stats
-  GET  /api/models                → Model registry
+  GET  /api/models                → All Ollama installs + routing table
   POST /v1/chat/completions       → OpenAI-compatible routed completions
   POST /v1/embeddings             → Forwarded to Ollama nomic-embed-text
   WS   /ws/metrics                → Real-time system metrics stream
@@ -27,9 +27,8 @@ from pydantic import BaseModel
 
 from config import settings
 from classifier import classify, Complexity
-from models import resolve_model, LOCAL_MODELS, CLOUD_MODELS, RECOMMENDED_MODELS
+from models import resolve_model, LOCAL_MODELS
 from metrics import get_system_metrics
-from cloud import call_anthropic, call_openai, call_gemini
 
 
 # ── State ─────────────────────────────────────────────────────────────────────
@@ -66,10 +65,51 @@ class ChatRequest(BaseModel):
     task_type: Optional[str] = None   # "code" | "analysis" | "general"
 
 
+# ── URLs ──────────────────────────────────────────────────────────────────────
+
+OLLAMA_URL    = settings.ollama_base_url
+HF_ENGINE_URL = settings.hf_engine_url
+
+
+# ── VRAM coordinator ──────────────────────────────────────────────────────────
+# Ensures only one model is in GPU VRAM at a time.
+# Both engines idle at ~0 VRAM when no model is loaded.
+
+async def _ollama_unload_all():
+    """Tell Ollama to unload any running model (keep_alive=0)."""
+    try:
+        async with httpx.AsyncClient(timeout=5) as c:
+            ps = await c.get(f"{OLLAMA_URL}/api/ps")
+            for m in ps.json().get("models", []):
+                await c.post(
+                    f"{OLLAMA_URL}/api/chat",
+                    json={"model": m["name"], "messages": [], "keep_alive": 0},
+                )
+    except Exception:
+        pass  # Ollama may not be running
+
+
+async def _hf_unload():
+    """Tell HF engine to release its model from VRAM."""
+    try:
+        async with httpx.AsyncClient(timeout=5) as c:
+            await c.post(f"{HF_ENGINE_URL}/v1/models/unload")
+    except Exception:
+        pass  # HF engine may not be running
+
+
+async def prepare_vram(target_backend: str):
+    """
+    Free VRAM from the other backend before a request.
+    Called automatically before every inference request.
+    """
+    if target_backend == "hf_engine":
+        await _ollama_unload_all()
+    elif target_backend == "ollama":
+        await _hf_unload()
+
+
 # ── Ollama proxy ──────────────────────────────────────────────────────────────
-
-OLLAMA_URL = settings.ollama_base_url
-
 
 async def call_ollama(
     model: str,
@@ -100,6 +140,46 @@ async def call_ollama(
     async with httpx.AsyncClient(timeout=180) as client:
         resp = await client.post(
             f"{OLLAMA_URL}/v1/chat/completions",
+            json=payload,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+
+# ── HF Engine proxy ───────────────────────────────────────────────────────────
+
+async def call_hf_engine(
+    model: str,
+    messages: list,
+    stream: bool = False,
+    temperature: float = None,
+    max_tokens: int = None,
+) -> Any:
+    payload: dict = {
+        "model":       model,
+        "messages":    messages,
+        "stream":      stream,
+        "temperature": temperature if temperature is not None else 0.7,
+        "max_tokens":  max_tokens or 2048,
+    }
+
+    if stream:
+        async def _stream():
+            async with httpx.AsyncClient(timeout=300) as client:
+                async with client.stream(
+                    "POST",
+                    f"{HF_ENGINE_URL}/v1/chat/completions",
+                    json=payload,
+                ) as resp:
+                    async for line in resp.aiter_lines():
+                        if line:
+                            yield f"{line}\n\n"
+        return _stream()
+
+    # Non-streaming — HF model load can take 30-120s on first request
+    async with httpx.AsyncClient(timeout=300) as client:
+        resp = await client.post(
+            f"{HF_ENGINE_URL}/v1/chat/completions",
             json=payload,
         )
         resp.raise_for_status()
@@ -203,79 +283,71 @@ async def status():
     except Exception:
         pass
 
+    # Quick HF engine health check
+    hf_ok = False
+    hf_status = {}
+    try:
+        async with httpx.AsyncClient(timeout=3) as client:
+            r = await client.get(f"{HF_ENGINE_URL}/health")
+            if r.status_code == 200:
+                hf_ok = True
+                hf_status = r.json()
+    except Exception:
+        pass
+
     return {
         "status": "ok",
         "uptime_s": round(time.time() - stats["start_time"]),
         "ollama": {"url": OLLAMA_URL, "ok": ollama_ok, "models": ollama_models},
-        "cloud": {
-            "anthropic": bool(settings.anthropic_api_key),
-            "openai": bool(settings.openai_api_key),
-            "google": bool(settings.google_api_key),
-        },
+        "hf_engine": {"url": HF_ENGINE_URL, "ok": hf_ok, **hf_status},
         "stats": stats,
     }
 
 
 @app.get("/api/models")
 async def models_list():
-    # Get actually-installed Ollama models
-    installed = set()
+    def _registry_match(ollama_name: str):
+        for k, v in LOCAL_MODELS.items():
+            if k in ollama_name or ollama_name in k:
+                return k, v
+        return None, None
+
+    local_installed: List[dict] = []
     try:
         async with httpx.AsyncClient(timeout=3) as client:
             r = await client.get(f"{OLLAMA_URL}/api/tags")
             if r.status_code == 200:
-                installed = {m["name"] for m in r.json().get("models", [])}
+                raw = r.json().get("models") or []
+                rows = []
+                for m in raw:
+                    name = m.get("name")
+                    if not name:
+                        continue
+                    item: dict = {
+                        "id": name,
+                        "size": m.get("size"),
+                        "modified_at": m.get("modified_at"),
+                        "digest": m.get("digest"),
+                    }
+                    _rk, rv = _registry_match(name)
+                    if rv is not None:
+                        item["vram_gb"] = rv.vram_gb
+                        item["description"] = rv.description
+                        item["recommended_for"] = rv.recommended_for
+                    rows.append(item)
+                local_installed = sorted(rows, key=lambda x: x["id"].lower())
     except Exception:
         pass
 
-    def _cloud_avail(provider: str) -> bool:
-        return {
-            "cloud_anthropic": bool(settings.anthropic_api_key),
-            "cloud_openai": bool(settings.openai_api_key),
-            "cloud_google": bool(settings.google_api_key),
-        }.get(provider, False)
-
     return {
-        "local_installed": [
-            {
-                "id": k,
-                "installed": any(k in name or name in k for name in installed),
-                "vram_gb": v.vram_gb,
-                "tier": v.tier,
-                "description": v.description,
-                "recommended_for": v.recommended_for,
-            }
-            for k, v in LOCAL_MODELS.items()
-        ],
-        "local_recommended": [
-            {
-                "id": k,
-                "installed": any(k in name or name in k for name in installed),
-                "vram_gb": v.vram_gb,
-                "tier": v.tier,
-                "description": v.description,
-                "recommended_for": v.recommended_for,
-                "pull_cmd": f"ollama pull {k}",
-            }
-            for k, v in RECOMMENDED_MODELS.items()
-        ],
-        "cloud": [
-            {
-                "id": k,
-                "provider": v.provider,
-                "tier": v.tier,
-                "description": v.description,
-                "available": _cloud_avail(v.provider),
-            }
-            for k, v in CLOUD_MODELS.items()
-        ],
+        "local_installed": local_installed,
         "routing_table": {
-            "trivial": settings.model_trivial,
-            "simple":  settings.model_simple,
-            "medium_code": settings.model_medium_code,
+            "trivial":        settings.model_trivial,
+            "simple":         settings.model_simple,
+            "medium_code":    settings.model_medium_code,
             "medium_general": settings.model_medium_general,
-            "complex": settings.model_complex,
-            "expert":  settings.model_expert_cloud if settings.anthropic_api_key else settings.model_expert_local,
+            "complex":        settings.model_complex,
+            "expert":         settings.model_expert,
         },
     }
 
@@ -300,7 +372,10 @@ async def chat_completions(req: ChatRequest):
 
     error = None
     try:
-        # 3. Call the right backend
+        # 3. Free VRAM on the other backend before loading
+        await prepare_vram(provider)
+
+        # 4. Call the right backend
         if provider == "ollama":
             result = await call_ollama(
                 model=model,
@@ -309,28 +384,13 @@ async def chat_completions(req: ChatRequest):
                 temperature=req.temperature,
                 max_tokens=req.max_tokens,
             )
-        elif provider == "cloud_anthropic":
-            result = await call_anthropic(
-                messages=messages,
+        elif provider == "hf_engine":
+            result = await call_hf_engine(
                 model=model,
+                messages=messages,
                 stream=req.stream,
-                max_tokens=req.max_tokens or 4096,
                 temperature=req.temperature,
-            )
-        elif provider == "cloud_openai":
-            result = await call_openai(
-                messages=messages,
-                model=model,
-                stream=req.stream,
-                max_tokens=req.max_tokens or 4096,
-                temperature=req.temperature,
-            )
-        elif provider == "cloud_google":
-            result = await call_gemini(
-                messages=messages,
-                model=model,
-                max_tokens=req.max_tokens or 4096,
-                temperature=req.temperature,
+                max_tokens=req.max_tokens,
             )
         else:
             raise HTTPException(500, f"Unknown provider: {provider}")
